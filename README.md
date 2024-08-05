@@ -1,17 +1,18 @@
-# Unified GEMM on Nvidia Tensor Cores, Intel XMX of PVC and DG2, and
-  Intel AMX of SPR  using SYCL joint matrix
+# Unified GEMM on Nvidia Tensor Cores, Intel XMX of PVC and DG2, and Intel AMX of SPR  using SYCL joint matrix
 
 ## joint_matrix_bf16_fill_k_cache.cpp:
-Portable Optimizations:
+#### Portable Optimizations:
  - cache tiling of i and j
  - cache tiling on k as well (so no reordering is needed)
  - data reuse of A and B in physical layer
-Specific Optimizations for PVC:
+#### Specific Optimizations for PVC:
  - Out of Bounds checking is used for PVC using -DOOB
  - Prefetch for PVC is enabled under -DPREFETCH
-Specific options for AMX and SG2
+#### Specific options for AMX and SG2
  - Both row major and VNNI transform options. For row major ommit -DVNNI
-Missing optimizations: no reordering, no SLM for DG2/Nvidia
+#### Missing optimizations: 
+no reordering, no SLM for DG2/Nvidia
+#### Important: 
 For maximum performance, cache and registers blocking parameters are
 different between Nvidia Tensor Cores, AMX and DPAS of DG2 vs PVC. See
 specific parameters below:
