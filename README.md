@@ -18,19 +18,12 @@ icpx -fsycl -fsycl-targets=nvidia_gpu_sm_80 joint_matrix_bf16_fill_k_cache.cpp  
 #### 4096 
 icpx -fsycl -fsycl-targets=nvidia_gpu_sm_80 joint_matrix_bf16_fill_k_cache.cpp -DMATRIX_SIZE=4096  -DNVIDIA -DMCACHE1=64 -DNCACHE1=64 -DMCACHE2=128 -DNCACHE2=128
 
-### PVC VNNI (~185 Tflops)
+### PVC row major (~220 TFlops)
 #### 2048
-icpx -fsycl joint_matrix_bf16_fill_k_cache.cpp -DVNNI
+icpx -fsycl joint_matrix_bf16_fill_k_cache.cpp -DPREFETCH -DOOB
 
 #### 4096 VNNI
-icpx -fsycl joint_matrix_bf16_fill_k_cache.cpp -DMATRIX_SIZE=4096 -DVNNI
-
-### PVC row major
-#### 2048
-icpx -fsycl joint_matrix_bf16_fill_k_cache.cpp 
-
-#### 4096 VNNI
-icpx -fsycl joint_matrix_bf16_fill_k_cache.cpp -DMATRIX_SIZE=4096 
+icpx -fsycl joint_matrix_bf16_fill_k_cache.cpp -DPREFETCH -DOOB -DMATRIX_SIZE=4096 
 
 ### DG2 VNNI (~45 Tflops)
 #### 2048

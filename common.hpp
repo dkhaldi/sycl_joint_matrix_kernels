@@ -3,6 +3,7 @@
 
 using namespace sycl;
 using namespace sycl::ext::oneapi::experimental::matrix;
+namespace syclex = sycl::ext::oneapi::experimental;
 using bfloat16 = sycl::ext::oneapi::bfloat16;
 
 #define BF16_EPSILON 0.00781250
