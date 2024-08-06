@@ -68,12 +68,14 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
     auto mk = q.submit([&](handler &h) {
       h.parallel_for<kernel_name>( // cache layer#1
           nd_range<2>{global, cachelocal}, [=](nd_item<2> it) {
+#ifndef ANNOT
             auto pA =
                 address_space_cast<sycl::access::address_space::global_space,
                                    sycl::access::decorated::no>(A);
             auto pB =
                 address_space_cast<sycl::access::address_space::global_space,
                                    sycl::access::decorated::no>(B);
+#endif
             auto pC =
                 address_space_cast<sycl::access::address_space::global_space,
                                    sycl::access::decorated::no>(C);
@@ -151,6 +153,18 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                 joint_matrix_fill(sg, tC[m][n], 0);
               }
             }
+#ifdef ANNOT
+            auto pA = syclex::annotated_ptr{
+                A, syclex::properties{
+                       syclintelex::read_hint<syclintelex::cache_control<
+                           syclintelex::cache_mode::uncached,
+                           syclex::cache_level::L2, syclex::cache_level::L3>>}};
+            auto pB = syclex::annotated_ptr{
+                B, syclex::properties{
+                       syclintelex::read_hint<syclintelex::cache_control<
+                           syclintelex::cache_mode::cached,
+                           syclex::cache_level::L2, syclex::cache_level::L3>>}};
+#endif
 
             for (unsigned int k2 = 0; k2 < colsA / KCACHE2; k2++) {
               joint_matrix<sub_group, TOperand, use::a, tM, tK,
