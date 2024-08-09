@@ -158,12 +158,12 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                 A, syclex::properties{
                        syclintelex::read_hint<syclintelex::cache_control<
                            syclintelex::cache_mode::uncached,
-                           syclex::cache_level::L2, syclex::cache_level::L3>>}};
+                           syclex::cache_level::L1, syclex::cache_level::L3>>}};
             auto pB = syclex::annotated_ptr{
                 B, syclex::properties{
                        syclintelex::read_hint<syclintelex::cache_control<
                            syclintelex::cache_mode::cached,
-                           syclex::cache_level::L2, syclex::cache_level::L3>>}};
+                           syclex::cache_level::L1, syclex::cache_level::L3>>}};
 #endif
 
             for (unsigned int k2 = 0; k2 < colsA / KCACHE2; k2++) {
