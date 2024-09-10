@@ -362,7 +362,8 @@ int main() {
       }
       if (combinations[i].nsize == 16) { // PVC
         gemm<8, 16, 16, class pvc_8x16x16>();
-        gemm<32, 64, 16, class pvc_32x64x16>();
+        if constexpr (NCACHE1 >= 64)
+          gemm<32, 64, 16, class pvc_32x64x16>();
         break;
       }
       if (combinations[i].nsize == 8) { // DG2
