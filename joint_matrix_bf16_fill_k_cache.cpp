@@ -7,6 +7,7 @@
 // - Prefetch for PVC is enabled under -DPREFETCH
 
 #include "common.hpp"
+#include "joint_matmul_reduce_impl.hpp"
 
 #ifndef MATRIX_SIZE
 #define MATRIX_SIZE 2048
@@ -44,20 +45,21 @@
 
 template <unsigned int rowsA, unsigned int colsA, unsigned int rowsB,
           unsigned int colsB, unsigned int vnniFactor, typename TOperand,
-          typename TResult, size_t tM, size_t tN, size_t tK, class kernel_name>
+          typename TResult, size_t tM, size_t tN, size_t tK, size_t TMCACHE1,
+          size_t TNCACHE1, size_t TKCACHE1, size_t TMCACHE2, size_t TNCACHE2,
+          size_t TKCACHE2, class kernel_name>
 double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                     int testIterations) {
 
   size_t SG_SIZE = get_sg_size<kernel_name>(q);
-  range<2> global{rowsA / MCACHE1, (colsB / NCACHE1) * SG_SIZE};
-  range<2> cachelocal{MCACHE2 / MCACHE1, NCACHE2 / NCACHE1 * SG_SIZE};
+  range<2> global{rowsA / TMCACHE1, (colsB / TNCACHE1) * SG_SIZE};
+  range<2> cachelocal{TMCACHE2 / TMCACHE1, TNCACHE2 / TNCACHE1 * SG_SIZE};
 
   // throw error if padding needed
   assert(colsA == rowsB);
-  assert(rowsA >= MCACHE2 && rowsA % tM == 0);
-  assert(colsA >= KCACHE2 && colsA % tK == 0);
-  assert(colsB >= NCACHE2 && colsB % tN == 0);
-
+  assert(rowsA >= TMCACHE2 && rowsA % tM == 0);
+  assert(colsA >= TKCACHE2 && colsA % tK == 0);
+  assert(colsB >= TNCACHE2 && colsB % tN == 0);
   // submit main kernel
 
   std::chrono::steady_clock::time_point start =
@@ -121,7 +123,8 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
             constexpr size_t prefDistance = 3;
             for (int p = 0; p < prefDistance; p++)
               joint_matrix_prefetch<prefRow, prefCol>(
-                  sg, A + (m2 * MCACHE2 + sgId * prefRow) * colsA + p * prefCol,
+                  sg,
+                  A + (m2 * TMCACHE2 + sgId * prefRow) * colsA + p * prefCol,
                   colsA, layout::row_major,
                   syclex::properties{syclex::prefetch_hint_L1});
 
@@ -130,16 +133,16 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
               joint_matrix_prefetch<prefRow, prefCol>(
                   sg,
                   B +
-                      (p * (KCACHE2 / vnniFactor) + pm1B * prefRow) * colsB *
+                      (p * (TKCACHE2 / vnniFactor) + pm1B * prefRow) * colsB *
                           vnniFactor +
-                      (n2 * NCACHE2 * vnniFactor + pn1B * prefCol),
+                      (n2 * TNCACHE2 * vnniFactor + pn1B * prefCol),
                   colsB * vnniFactor, layout::row_major,
                   syclex::properties{syclex::prefetch_hint_L1});
 #else  // VNNI
           for (int p = 0; p < prefDistance; p++)
             joint_matrix_prefetch<prefRow, prefCol>(
                 sg,
-                B + (p * KCACHE2 + pm1B * prefRow) * colsB + n2 * NCACHE2 +
+                B + (p * TKCACHE2 + pm1B * prefRow) * colsB + n2 * TNCACHE2 +
                     pn1B * prefCol,
                 colsB, layout::row_major,
                 syclex::properties{syclex::prefetch_hint_L1});
@@ -147,9 +150,9 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
 #endif // PREFETCH
 
             joint_matrix<sub_group, TResult, use::accumulator, tM, tN>
-                tC[MCACHE1 / tM][NCACHE1 / tN];
-            for (unsigned int m = 0; m < MCACHE1 / tM; m++) {
-              for (unsigned int n = 0; n < NCACHE1 / tN; n++) {
+                tC[TMCACHE1 / tM][TNCACHE1 / tN];
+            for (unsigned int m = 0; m < TMCACHE1 / tM; m++) {
+              for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
                 joint_matrix_fill(sg, tC[m][n], 0);
               }
             }
@@ -166,48 +169,48 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                            syclex::cache_level::L1, syclex::cache_level::L3>>}};
 #endif
 
-            for (unsigned int k2 = 0; k2 < colsA / KCACHE2; k2++) {
+            for (unsigned int k2 = 0; k2 < colsA / TKCACHE2; k2++) {
               joint_matrix<sub_group, TOperand, use::a, tM, tK,
                            layout::row_major>
-                  tA[MCACHE1 / tM][KCACHE2 / KCACHE1];
+                  tA[TMCACHE1 / tM][TKCACHE2 / TKCACHE1];
 #ifdef VNNI
               joint_matrix<sub_group, TOperand, use::b, tK, tN,
                            layout::ext_intel_packed>
 
-                  tB[NCACHE1 / tN][KCACHE2 / KCACHE1];
+                  tB[TNCACHE1 / tN][TKCACHE2 / TKCACHE1];
 #else
               joint_matrix<sub_group, TOperand, use::b, tK, tN,
                            layout::row_major>
 
-                  tB[NCACHE1 / tN][KCACHE2 / KCACHE1];
+                  tB[TNCACHE1 / tN][TKCACHE2 / TKCACHE1];
 #endif
-              for (unsigned int k1 = 0; k1 < KCACHE2 / KCACHE1; k1++) {
+              for (unsigned int k1 = 0; k1 < TKCACHE2 / TKCACHE1; k1++) {
                 //  physical layer
-                unsigned int k = (k2 * KCACHE2 + k1 * KCACHE1) / tK;
-                for (unsigned int m = 0; m < MCACHE1 / tM; m++) {
+                unsigned int k = (k2 * TKCACHE2 + k1 * TKCACHE1) / tK;
+                for (unsigned int m = 0; m < TMCACHE1 / tM; m++) {
 #ifdef OOB
                   ext::intel::experimental::matrix::joint_matrix_load_checked(
                       sg, tA[m][k1], pA, colsA, rowsA, colsA,
-                      m2 * MCACHE2 + m1 * MCACHE1 + m * tM, k * tK);
+                      m2 * TMCACHE2 + m1 * TMCACHE1 + m * tM, k * tK);
 #else  // OOB
                   joint_matrix_load(
                       sg, tA[m][k1],
-                      pA + (m2 * MCACHE2 + m1 * MCACHE1 + m * tM) * colsA +
+                      pA + (m2 * TMCACHE2 + m1 * TMCACHE1 + m * tM) * colsA +
                           k * tK,
                       colsA);
 #endif // OOB
                 }
-                for (unsigned int n = 0; n < NCACHE1 / tN; n++) {
+                for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
 #ifdef OOB
 #ifdef VNNI
                   ext::intel::experimental::matrix::joint_matrix_load_checked(
                       sg, tB[n][k1], pB, colsB * vnniFactor, rowsB / vnniFactor,
                       colsB * vnniFactor, k * tK / vnniFactor,
-                      (n2 * NCACHE2 + n1 * NCACHE1 + n * tN) * vnniFactor);
+                      (n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN) * vnniFactor);
 #else // VNNI
                 ext::intel::experimental::matrix::joint_matrix_load_checked(
                     sg, tB[n][k1], pB, colsB, rowsB, colsB, k * tK,
-                    n2 * NCACHE2 + n1 * NCACHE1 + n * tN);
+                    n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN);
 
 #endif // VNNI
 #else  // OOB
@@ -215,25 +218,25 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                   joint_matrix_load(
                       sg, tB[n][k1],
                       pB + (k * tK / vnniFactor) * (colsB * vnniFactor) +
-                          (n2 * NCACHE2 + n1 * NCACHE1 + n * tN) * vnniFactor,
+                          (n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN) * vnniFactor,
                       colsB * vnniFactor);
 #else  // VNNI
                   joint_matrix_load(
                       sg, tB[n][k1],
                       pB + (k * tK) * (colsB) +
-                          (n2 * NCACHE2 + n1 * NCACHE1 + n * tN), colsB);
+                          (n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN), colsB);
 #endif // VNNI
 #endif // OOB
                 }
-                for (unsigned int m = 0; m < MCACHE1 / tM; m++) {
-                  for (unsigned int n = 0; n < NCACHE1 / tN; n++) {
+                for (unsigned int m = 0; m < TMCACHE1 / tM; m++) {
+                  for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
                     joint_matrix_mad(sg, tC[m][n], tA[m][k1], tB[n][k1],
                                      tC[m][n]); // 32 DPAS
                   }
                 }
               } // for k1
 #ifdef PREFETCH
-              auto prefetch_offsetA = (m2 * MCACHE2 + sgId * prefRow) * colsA +
+              auto prefetch_offsetA = (m2 * TMCACHE2 + sgId * prefRow) * colsA +
                                       (k2 + prefDistance) * prefCol;
               if ((prefetch_offsetA + (prefRow * MATRIX_K) + prefCol) <
                   (MATRIX_M * MATRIX_K))
@@ -243,10 +246,10 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
 
 #ifdef VNNI
               auto prefetch_offsetB =
-                  ((k2 + prefDistance) * (KCACHE2 / vnniFactor) +
+                  ((k2 + prefDistance) * (TKCACHE2 / vnniFactor) +
                    pm1B * prefRow) *
                       (colsB)*vnniFactor +
-                  (n2 * NCACHE2 * vnniFactor + pn1B * prefCol);
+                  (n2 * TNCACHE2 * vnniFactor + pn1B * prefCol);
               if ((prefetch_offsetB + (prefRow * MATRIX_N * vnniFactor) +
                    prefCol) < (MATRIX_K * MATRIX_N))
                 joint_matrix_prefetch<prefRow, prefCol>(
@@ -255,8 +258,8 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                     syclex::properties{syclex::prefetch_hint_L1});
 #else  // VNNI
             auto prefetch_offsetB =
-                ((k2 + prefDistance) * KCACHE2 + pm1B * prefRow) * (colsB) +
-                (n2 * NCACHE2 + pn1B * prefCol);
+                ((k2 + prefDistance) * TKCACHE2 + pm1B * prefRow) * (colsB) +
+                (n2 * TNCACHE2 + pn1B * prefCol);
             if ((prefetch_offsetB + (prefRow * MATRIX_N) + prefCol) <
                 (MATRIX_K * MATRIX_N))
               joint_matrix_prefetch<prefRow, prefCol>(
@@ -265,18 +268,18 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
 #endif // VNNI
 #endif // PREFETCH
             } // for k2
-            for (unsigned int m = 0; m < MCACHE1 / tM; m++) {
-              for (unsigned int n = 0; n < NCACHE1 / tN; n++) {
+            for (unsigned int m = 0; m < TMCACHE1 / tM; m++) {
+              for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
 #ifdef OOB
                 ext::intel::experimental::matrix::joint_matrix_store_checked(
                     sg, tC[m][n], pC, colsB, layout::row_major, rowsA, colsB,
-                    m2 * MCACHE2 + m1 * MCACHE1 + m * tM,
-                    n2 * NCACHE2 + n1 * NCACHE1 + n * tN);
+                    m2 * TMCACHE2 + m1 * TMCACHE1 + m * tM,
+                    n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN);
 #else  // OOB
                 joint_matrix_store(
                     sg, tC[m][n],
-                    pC + (m2 * MCACHE2 + m1 * MCACHE1 + m * tM) * colsB +
-                        (n2 * NCACHE2 + n1 * NCACHE1 + n * tN),
+                    pC + (m2 * TMCACHE2 + m1 * TMCACHE1 + m * tM) * colsB +
+                        (n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN),
                     colsB, layout::row_major);
 #endif // OOB
               }
@@ -291,7 +294,9 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
   return duration.count();
 }
 
-template <size_t tM, size_t tN, size_t tK, class kernel_name> int gemm(void) {
+template <size_t tM, size_t tN, size_t tK, class kernel_name,
+          bool reduce = false>
+int gemm(void) {
   // number of test iterations
   constexpr unsigned int testIterations = 100;
 
@@ -313,16 +318,30 @@ template <size_t tM, size_t tN, size_t tK, class kernel_name> int gemm(void) {
 #endif
 
   std::cerr << "Running tests...";
+  double duration = 0;
+  if constexpr (reduce) {
+    std::cout << "run M<8 kernel, M = " << tM << " tN " << tN << " tK " << tK
+              << " \n";
+    joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, bfloat16, float, tM,
+                        tN, tK, tM, NCACHE1, 16, tM, NCACHE2, 16, kernel_name>(
+        A, B, C, q, 1);
+    duration =
+        joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, bfloat16, float,
+                            tM, tN, tK, tM, NCACHE1, 16, tM, NCACHE2, 16,
+                            kernel_name>(A, B, C, q, testIterations);
+  } else {
+    // warm up
+    joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, bfloat16, float, tM,
+                 tN, tK, (MATRIX_M >= MCACHE1) ? MCACHE1 : MATRIX_M, NCACHE1,
+                 KCACHE1, (MATRIX_M >= MCACHE2) ? MCACHE2 : MATRIX_M, NCACHE2,
+                 KCACHE2, kernel_name>(A, B, C, q, 1);
 
-  // warm up
-  joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, bfloat16, float, tM,
-               tN, tK, kernel_name>(A, B, C, q, 1);
-
-  // run testIterations time, aggregate and calculate average run time
-  double duration =
-      joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, bfloat16, float,
-                   tM, tN, tK, kernel_name>(A, B, C, q, testIterations);
-
+    // run testIterations time, aggregate and calculate average run time
+    duration = joint_matmul < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2,
+    bfloat16, float, tM, tN, tK, (MATRIX_M >= MCACHE1) ? MCACHE1 : MATRIX_M,
+    NCACHE1, KCACHE1, (MATRIX_M >= MCACHE2) ? MCACHE2 : MATRIX_M, NCACHE2,
+    KCACHE2, kernel_name > (A, B, C, q, testIterations);
+  }
   verify_result(C, refC, MATRIX_M, MATRIX_N, MATRIX_K);
 
   double msecPerMatrixMul = duration / static_cast<double>(testIterations);
@@ -357,17 +376,25 @@ int main() {
   for (unsigned int i = 0; i < combinations.size(); i++) {
     if (combinations[i].atype == matrix_type::bf16) {
       if (combinations[i].nsize == 0) {
-        gemm<16 /*tM*/, 16 /*tN*/, 32 /*tK*/, class amx>(); // AMX
+        gemm<(MATRIX_M >= 16) ? 16 : MATRIX_M /*tM*/, 16 /*tN*/, 32 /*tK*/,
+             class amx>(); // AMX
         break;
       }
       if (combinations[i].nsize == 16) { // PVC
-        gemm<8, 16, 16, class pvc_8x16x16>();
-        if constexpr (NCACHE1 >= 64)
-          gemm<32, 64, 16, class pvc_32x64x16>();
+        gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, class pvc_8x16x16>();
+        // gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, class pvc_8x16x16_red,
+        // true>();
+	//only 1x64x16 and 32x64x16 are currently supported
+        if constexpr (NCACHE1 >= 64 && (MATRIX_M == 1 || MATRIX_M >= 32)) {
+          gemm<(MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16, class pvc_32x64x16>();
+          // M=1 has a bug with this combination
+          // gemm<(MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16, class
+          // pvc_32x64x16_red, true>();
+        }
         break;
       }
       if (combinations[i].nsize == 8) { // DG2
-        gemm<8, 8, 16, class dg2>();
+        gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 8, 16, class dg2>();
         break;
       }
     }

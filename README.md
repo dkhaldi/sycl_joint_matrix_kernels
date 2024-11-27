@@ -17,6 +17,8 @@ For maximum performance, cache and registers blocking parameters are
 different between Nvidia Tensor Cores, AMX and DPAS of DG2 vs PVC. See
 specific parameters below:
 
+M=N=K=X cases, use -DMATRIX_SIZE=X
+Otherwise, use: -DMATRIX_M=1024 -DMATRIX_N=6144 -DMATRIX_K=6144
 
 ## Build Command lines
 
