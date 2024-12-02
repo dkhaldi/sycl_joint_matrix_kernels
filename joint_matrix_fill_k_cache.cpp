@@ -294,26 +294,28 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
   return duration.count();
 }
 
-template <size_t tM, size_t tN, size_t tK, class kernel_name,
+template <typename T1, typename T2, size_t tM, size_t tN, size_t tK,
+          size_t MCache1, size_t NCache1, size_t KCache1, size_t MCache2,
+          size_t NCache2, size_t KCache2, class kernel_name,
           bool reduce = false>
 int gemm(void) {
   // number of test iterations
   constexpr unsigned int testIterations = 100;
 
   queue q;
-  bfloat16 *A = malloc_shared<bfloat16>(MATRIX_M * MATRIX_K, q);
-  bfloat16 *B = malloc_shared<bfloat16>(MATRIX_K * MATRIX_N, q);
+  T1 *A = malloc_shared<T1>(MATRIX_M * MATRIX_K, q);
+  T1 *B = malloc_shared<T1>(MATRIX_K * MATRIX_N, q);
 #ifdef VNNI
-  bfloat16 *vnniB = malloc_shared<bfloat16>(MATRIX_K * MATRIX_N, q);
+  T1 *vnniB = malloc_shared<T1>(MATRIX_K * MATRIX_N, q);
 #endif
-  float *C = malloc_shared<float>(MATRIX_M * MATRIX_N, q);
-  float *refC = malloc_shared<float>(MATRIX_M * MATRIX_N, q);
+  T2 *C = malloc_shared<T2>(MATRIX_M * MATRIX_N, q);
+  T2 *refC = malloc_shared<T2>(MATRIX_M * MATRIX_N, q);
   // Initialize; fill matrices
-  fill_matrix(A, MATRIX_M, MATRIX_K);
-  fill_matrix(B, MATRIX_K, MATRIX_N);
-  native_matmul(A, B, refC, MATRIX_M, MATRIX_N, MATRIX_K);
+  matrix_rand(MATRIX_M, MATRIX_K, A, T1(1));
+  matrix_rand(MATRIX_K, MATRIX_N, B, T1(1));
+  matrix_multiply_ref(A, B, refC, MATRIX_M, MATRIX_N, MATRIX_K);
 #ifdef VNNI
-  matrix_vnni<bfloat16>(MATRIX_K, MATRIX_N, B, vnniB, 2);
+  matrix_vnni<T1>(MATRIX_K, MATRIX_N, B, vnniB, 2);
   B = vnniB;
 #endif
 
@@ -322,27 +324,27 @@ int gemm(void) {
   if constexpr (reduce) {
     std::cout << "run M<8 kernel, M = " << tM << " tN " << tN << " tK " << tK
               << " \n";
-    joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, bfloat16, float, tM,
-                        tN, tK, tM, NCACHE1, 16, tM, NCACHE2, 16, kernel_name>(
-        A, B, C, q, 1);
+    joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, T1, T2, tM, tN, tK, tM,
+                        NCache1, 16, tM, NCache2, 16, kernel_name>(A, B, C, q,
+                                                                   1);
     duration =
-        joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, bfloat16, float,
-                            tM, tN, tK, tM, NCACHE1, 16, tM, NCACHE2, 16,
-                            kernel_name>(A, B, C, q, testIterations);
+        joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, T1, T2, tM, tN, tK,
+                            tM, NCache1, 16, tM, NCache2, 16, kernel_name>(
+            A, B, C, q, testIterations);
   } else {
     // warm up
-    joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, bfloat16, float, tM,
-                 tN, tK, (MATRIX_M >= MCACHE1) ? MCACHE1 : MATRIX_M, NCACHE1,
-                 KCACHE1, (MATRIX_M >= MCACHE2) ? MCACHE2 : MATRIX_M, NCACHE2,
-                 KCACHE2, kernel_name>(A, B, C, q, 1);
+    joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1, T2, tM, tN, tK,
+                 (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M, NCache1, KCache1,
+                 (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2, KCache2,
+                 kernel_name>(A, B, C, q, 1);
 
     // run testIterations time, aggregate and calculate average run time
-    duration = joint_matmul < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2,
-    bfloat16, float, tM, tN, tK, (MATRIX_M >= MCACHE1) ? MCACHE1 : MATRIX_M,
-    NCACHE1, KCACHE1, (MATRIX_M >= MCACHE2) ? MCACHE2 : MATRIX_M, NCACHE2,
-    KCACHE2, kernel_name > (A, B, C, q, testIterations);
+    duration = joint_matmul < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1, T2,
+    tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M, NCache1, KCache1,
+    (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2, KCache2,
+    kernel_name > (A, B, C, q, testIterations);
   }
-  verify_result(C, refC, MATRIX_M, MATRIX_N, MATRIX_K);
+  matrix_compare(MATRIX_M, MATRIX_N, C, refC);
 
   double msecPerMatrixMul = duration / static_cast<double>(testIterations);
   double gflops = (2.f * MATRIX_M * MATRIX_N * MATRIX_K * 1.0e-9f) /
@@ -364,9 +366,16 @@ int gemm(void) {
 }
 
 int main() {
+  constexpr size_t MCache1 = MCACHE1;
+  constexpr size_t MCache2 = MCACHE2;
+  constexpr size_t NCache1 = NCACHE1;
+  constexpr size_t NCache2 = NCACHE2;
+  constexpr size_t KCache1 = KCACHE1;
+  constexpr size_t KCache2 = KCACHE2;
 #ifdef NVIDIA
   // Use -DMCACHE1=64 -DNCACHE1=64 -DMCACHE2=128 -DNCACHE2=128
-  gemm<16, 16, 16, class nvidia_16x16x16>();
+  gemm<bfloat16, float, 16, 16, 16, MCache1, NCache1, KCache1, MCache2, NCache2,
+       KCache2, class nvidia_16x16x16>();
 #else
   queue q;
   std::vector<combination> combinations =
@@ -376,17 +385,29 @@ int main() {
   for (unsigned int i = 0; i < combinations.size(); i++) {
     if (combinations[i].atype == matrix_type::bf16) {
       if (combinations[i].nsize == 0) {
-        gemm<(MATRIX_M >= 16) ? 16 : MATRIX_M /*tM*/, 16 /*tN*/, 32 /*tK*/,
+        gemm<bfloat16, float, (MATRIX_M >= 16) ? 16 : MATRIX_M /*tM*/,
+             16 /*tN*/, 32 /*tK*/, MCache1, NCache1, KCache1, MCache2, NCache2,
+             KCache2,
              class amx>(); // AMX
         break;
       }
       if (combinations[i].nsize == 16) { // PVC
-        gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, class pvc_8x16x16>();
+        std::cerr << "PVC bf16 \n";
+        gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, MCache1,
+             NCache1, KCache1, MCache2, NCache2, KCache2,
+             class pvc_bf16_8x16x16>();
+        std::cerr << "PVC int8_t \n";
+        gemm<int8_t, int32_t, (MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 32, MCache1,
+             NCache1, KCache1 * 2, MCache2, NCache2, KCache2 * 2,
+             class pvc_int8_8x16x16>();
         // gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, class pvc_8x16x16_red,
         // true>();
-	//only 1x64x16 and 32x64x16 are currently supported
+        // only 1x64x16 and 32x64x16 are currently supported
         if constexpr (NCACHE1 >= 64 && (MATRIX_M == 1 || MATRIX_M >= 32)) {
-          gemm<(MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16, class pvc_32x64x16>();
+          std::cerr << "PVC bf16 \n";
+          gemm<bfloat16, float, (MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16,
+               MCache1, NCache1, KCache1, MCache2, NCache2, KCache2,
+               class pvc_32x64x16>();
           // M=1 has a bug with this combination
           // gemm<(MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16, class
           // pvc_32x64x16_red, true>();
@@ -394,7 +415,8 @@ int main() {
         break;
       }
       if (combinations[i].nsize == 8) { // DG2
-        gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 8, 16, class dg2>();
+        gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, 8, 16, MCache1,
+             NCache1, KCache1, MCache2, NCache2, KCache2, class dg2>();
         break;
       }
     }
