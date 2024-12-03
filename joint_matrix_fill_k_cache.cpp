@@ -55,11 +55,16 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
   range<2> global{rowsA / TMCACHE1, (colsB / TNCACHE1) * SG_SIZE};
   range<2> cachelocal{TMCACHE2 / TMCACHE1, TNCACHE2 / TNCACHE1 * SG_SIZE};
 
-  // throw error if padding needed
-  assert(colsA == rowsB);
-  assert(rowsA >= TMCACHE2 && rowsA % tM == 0);
-  assert(colsA >= TKCACHE2 && colsA % tK == 0);
-  assert(colsB >= TNCACHE2 && colsB % tN == 0);
+  // throw error if padding or different tuning parameters are needed
+  static_assert(colsA == rowsB);
+  static_assert(rowsA >= TMCACHE2 && rowsA % tM == 0);
+  static_assert(colsA >= TKCACHE2 && colsA % tK == 0);
+  static_assert(colsB >= TNCACHE2 && colsB % tN == 0);
+  static_assert(colsB >= TNCACHE2 && colsB % tN == 0);
+  static_assert((colsB % TNCACHE2 == 0) &&
+                "NCACHE2 does not multiply MATRIX_N, use a different NCACHE2 "
+                "in the command line for instance -DNCACHE2=128");
+
   // submit main kernel
 
   std::chrono::steady_clock::time_point start =
@@ -91,6 +96,7 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
             size_t sgId = sg.get_group_id()[0];
             // There are MCACHE2/MCACHE1 x NCACHE2/NCACHE1 subgroups: NumSGs
             // PVC case: this is 8x4 subgroups
+            // 8 = MCACHE2/NumSGs
             // BKM for PVC is to use prefetch of 8x32 for each subgroup
             constexpr size_t prefRow = 8;
             constexpr size_t prefCol = 32;
