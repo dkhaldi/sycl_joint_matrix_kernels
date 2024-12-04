@@ -98,7 +98,7 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
             // PVC case: this is 8x4 subgroups
             // 8 = MCACHE2/NumSGs
             // BKM for PVC is to use prefetch of 8x32 for each subgroup
-            constexpr size_t prefRow = 8;
+            constexpr size_t prefRow = (rowsA >= 8) ? 8 : rowsA;
             constexpr size_t prefCol = 32;
         // All the SGs of one workgroup prefetch MCACHE2xKCACHE2 of A
         // All the SGs of one workgroup prefetch KCACHE2xNCACHE2 of B
