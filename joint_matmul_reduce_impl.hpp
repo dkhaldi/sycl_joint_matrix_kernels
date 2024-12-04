@@ -93,7 +93,6 @@ double joint_matmul_reduce(TOperand *A, TOperand *B, TResult *C, queue &q,
 
             for (unsigned int m = 0; m < TMCACHE1 / tM; m++) {
               for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
-                float sum = 0;
 #ifdef LEGACY
                 auto wi_slice = ext::oneapi::detail::get_wi_data(sg, tC[m][n]);
 

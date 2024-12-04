@@ -63,7 +63,8 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
   static_assert(colsB >= TNCACHE2 && colsB % tN == 0);
   static_assert((colsB % TNCACHE2 == 0) &&
                 "NCACHE2 does not multiply MATRIX_N, use a different NCACHE2 "
-                "in the command line for instance -DNCACHE2=128");
+                "in the command line for instance -DNCACHE2=128 or pad "
+                "MATRIX_N to be multiple of NCACHE2");
 
   // submit main kernel
 
@@ -302,8 +303,8 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
 
 template <typename T1, typename T2, size_t tM, size_t tN, size_t tK,
           size_t MCache1, size_t NCache1, size_t KCache1, size_t MCache2,
-          size_t NCache2, size_t KCache2, class kernel_name,
-          bool reduce = false>
+          size_t NCache2, size_t KCache2, unsigned int vnniFactor,
+          class kernel_name, bool reduce = false>
 int gemm(void) {
   // number of test iterations
   constexpr unsigned int testIterations = 100;
@@ -321,34 +322,32 @@ int gemm(void) {
   matrix_rand(MATRIX_K, MATRIX_N, B, T1(1));
   matrix_multiply_ref(A, B, refC, MATRIX_M, MATRIX_N, MATRIX_K);
 #ifdef VNNI
-  matrix_vnni<T1>(MATRIX_K, MATRIX_N, B, vnniB, 2);
+  matrix_vnni<T1>(MATRIX_K, MATRIX_N, B, vnniB, vnniFactor);
   B = vnniB;
 #endif
 
   std::cerr << "Running tests...";
   double duration = 0;
   if constexpr (reduce) {
-    std::cout << "run M<8 kernel, M = " << tM << " tN " << tN << " tK " << tK
-              << " \n";
-    joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, T1, T2, tM, tN, tK, tM,
-                        NCache1, 16, tM, NCache2, 16, kernel_name>(A, B, C, q,
-                                                                   1);
-    duration =
-        joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, 2, T1, T2, tM, tN, tK,
-                            tM, NCache1, 16, tM, NCache2, 16, kernel_name>(
-            A, B, C, q, testIterations);
+    std::cout << "run M=1 reduction kernel, M = " << MATRIX_M << " \n";
+    joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, vnniFactor, T1, T2, tM,
+                        tN, tK, tM, NCache1, tK, tM, NCache2, tK, kernel_name>(
+        A, B, C, q, 1);
+    duration = joint_matmul_reduce<MATRIX_M, MATRIX_N, MATRIX_K, vnniFactor, T1,
+                                   T2, tM, tN, tK, tM, NCache1, tK, tM, NCache2,
+                                   tK, kernel_name>(A, B, C, q, testIterations);
   } else {
     // warm up
-    joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1, T2, tM, tN, tK,
-                 (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M, NCache1, KCache1,
-                 (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2, KCache2,
-                 kernel_name>(A, B, C, q, 1);
+    joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, vnniFactor, T1, T2, tM,
+                 tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M, NCache1,
+                 KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2,
+                 KCache2, kernel_name>(A, B, C, q, 1);
 
     // run testIterations time, aggregate and calculate average run time
-    duration = joint_matmul < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1, T2,
-    tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M, NCache1, KCache1,
-    (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2, KCache2,
-    kernel_name > (A, B, C, q, testIterations);
+    duration = joint_matmul < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N,
+    vnniFactor, T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
+    NCache1, KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2,
+    KCache2, kernel_name > (A, B, C, q, testIterations);
   }
   matrix_compare(MATRIX_M, MATRIX_N, C, refC);
 
@@ -393,36 +392,39 @@ int main() {
       if (combinations[i].nsize == 0) {
         gemm<bfloat16, float, (MATRIX_M >= 16) ? 16 : MATRIX_M /*tM*/,
              16 /*tN*/, 32 /*tK*/, MCache1, NCache1, KCache1, MCache2, NCache2,
-             KCache2,
+             KCache2, 2,
              class amx>(); // AMX
         break;
       }
       if (combinations[i].nsize == 16) { // PVC
         std::cerr << "PVC bf16 \n";
         gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, MCache1,
-             NCache1, KCache1, MCache2, NCache2, KCache2,
+             NCache1, KCache1, MCache2, NCache2, KCache2, 2,
              class pvc_bf16_8x16x16>();
+        if (MATRIX_M == 1)
+          gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, MCache1,
+               NCache1, KCache1, MCache2, NCache2, KCache2, 2,
+               class pvc_8x16x16_red, true>();
         std::cerr << "PVC int8_t \n";
         gemm<int8_t, int32_t, (MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 32, MCache1,
-             NCache1, KCache1 * 2, MCache2, NCache2, KCache2 * 2,
+             NCache1, KCache1 * 2, MCache2, NCache2, KCache2 * 2, 4,
              class pvc_int8_8x16x16>();
-        // gemm<(MATRIX_M >= 8) ? 8 : MATRIX_M, 16, 16, class pvc_8x16x16_red,
-        // true>();
         // only 1x64x16 and 32x64x16 are currently supported
         if constexpr (NCACHE1 >= 64 && (MATRIX_M == 1 || MATRIX_M >= 32)) {
           std::cerr << "PVC bf16 \n";
           gemm<bfloat16, float, (MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16,
-               MCache1, NCache1, KCache1, MCache2, NCache2, KCache2,
+               MCache1, NCache1, KCache1, MCache2, NCache2, KCache2, 2,
                class pvc_32x64x16>();
           // M=1 has a bug with this combination
-          // gemm<(MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16, class
+          // gemm<bfloat16, float,(MATRIX_M >= 32) ? 32 : MATRIX_M, 64, 16,
+          // MCache1, NCache1, KCache1, MCache2, NCache2, KCache2, 2, class
           // pvc_32x64x16_red, true>();
         }
         break;
       }
       if (combinations[i].nsize == 8) { // DG2
         gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, 8, 16, MCache1,
-             NCache1, KCache1, MCache2, NCache2, KCache2, class dg2>();
+             NCache1, KCache1, MCache2, NCache2, KCache2, 2, class dg2>();
         break;
       }
     }
