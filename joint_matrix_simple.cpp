@@ -39,7 +39,7 @@
 #endif
 
 template <unsigned int rowsA, unsigned int colsA, unsigned int rowsB,
-          unsigned int colsB, unsigned int vnniFactor, typename TOperand,
+          unsigned int colsB, typename TOperand,
           typename TResult, size_t tM, size_t tN, size_t tK, size_t TMCACHE1,
           size_t TNCACHE1, size_t TKCACHE1, size_t TMCACHE2, size_t TNCACHE2,
           size_t TKCACHE2, class kernel_name>
@@ -102,7 +102,6 @@ double joint_matmul_simple(TOperand *A, TOperand *B_[NUM_B_MATRICES], TResult *C
                   tA[TMCACHE1 / tM][TKCACHE2 / TKCACHE1];
               joint_matrix<sub_group, TOperand, use::b, tK, tN,
                            layout::row_major>
-
                   tB[TNCACHE1 / tN][TKCACHE2 / TKCACHE1];
               for (unsigned int k1 = 0; k1 < TKCACHE2 / TKCACHE1; k1++) {
                 //  physical layer
@@ -147,7 +146,7 @@ double joint_matmul_simple(TOperand *A, TOperand *B_[NUM_B_MATRICES], TResult *C
 
 template <typename T1, typename T2, size_t tM, size_t tN, size_t tK,
           size_t MCache1, size_t NCache1, size_t KCache1, size_t MCache2,
-          size_t NCache2, size_t KCache2, unsigned int vnniFactor,
+          size_t NCache2, size_t KCache2,
           class kernel_name, bool reduce = false>
 int gemm(void) {
   // number of test iterations
@@ -166,7 +165,7 @@ int gemm(void) {
   matrix_rand(MATRIX_K, MATRIX_N, B[0], T1(1));
   matrix_multiply_ref(A, B[0], refC, MATRIX_M, MATRIX_N, MATRIX_K);
   joint_matmul_simple < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N,
-  vnniFactor, T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
+  T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
   (MATRIX_N >= NCache1) ? NCache1 : MATRIX_N, KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M,
   (MATRIX_N >= NCache1) ? NCache2 : MATRIX_N,
   KCache2, kernel_name > (A, B, C, q, 1);
@@ -177,7 +176,7 @@ int gemm(void) {
 
   // run testIterations time, aggregate and calculate average run time
   duration = joint_matmul_simple < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N,
-  vnniFactor, T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
+  T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
   (MATRIX_N >= NCache1) ? NCache1 : MATRIX_N, KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M,
   (MATRIX_N >= NCache1) ? NCache2 : MATRIX_N,
   KCache2, kernel_name > (A, B, C, q, testIterations);
@@ -223,13 +222,13 @@ int main() {
       if (combinations[i].nsize == 16) { // PVC
         std::cerr << "PVC bf16 \n";
         gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, (MATRIX_N >= 16) ? 16 : MATRIX_N, 16, MCache1,
-             NCache1, KCache1, MCache2, NCache2, KCache2, 2,
+             NCache1, KCache1, MCache2, NCache2, KCache2,
              class pvc_bf16_8x16x16>();
         // gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, (MATRIX_N >= 64) ? 64 : MATRIX_N, 32, MCache1,
         //      NCache1, KCache1, MCache2, NCache2, KCache2, 2,
         //      class pvc_bf16_8x32x16>();
         gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, (MATRIX_N >= 64) ? 64 : MATRIX_N, 16, MCache1,
-             NCache1, KCache1, MCache2, NCache2, KCache2, 2,
+             NCache1, KCache1, MCache2, NCache2, KCache2,
              class pvc_bf16_8x64x16>();
         break;
       }

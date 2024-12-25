@@ -106,7 +106,7 @@ double joint_matmul_int4(TOperand *A, TOperand *B_[NUM_B_MATRICES], TResult *C, 
               }
             }
 
-            for (unsigned int k2 = 0; k2 < colsA / TKCACHE2; k2++) {
+            for (unsigned int k2 = 0; k2 <  colsA / BF16_INT4 / TKCACHE2; k2++) {
               joint_matrix<sub_group, TOperand, use::a, tM, tK,
                            layout::row_major>
                   tA[TMCACHE1 / tM][TKCACHE2 / TKCACHE1];
@@ -131,10 +131,10 @@ double joint_matmul_int4(TOperand *A, TOperand *B_[NUM_B_MATRICES], TResult *C, 
                     n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN);
                 ext::intel::experimental::matrix::joint_matrix_apply(sg, tB_int4[n][k1], [&](TOperand &src, size_t row, size_t col) {
                   uint16_t src_int = sycl::bit_cast<uint16_t>(src);
-                  pTmp_n[(row * BF16_INT4 + 0) * tN + col] = TOperand((src_int & 0x000f));
-                  pTmp_n[(row * BF16_INT4 + 1) * tN + col] = TOperand((src_int & 0x00f0) >> 4);
-                  pTmp_n[(row * BF16_INT4 + 2) * tN + col] = TOperand((src_int & 0x0f00) >> 8);
-                  pTmp_n[(row * BF16_INT4 + 3) * tN + col] = TOperand((src_int & 0xf000) >> 12);
+                  pTmp_n[(col * BF16_INT4 + 0) * tN + row] = TOperand((src_int & 0x000f));
+                  pTmp_n[(col * BF16_INT4 + 1) * tN + row] = TOperand((src_int & 0x00f0) >> 4);
+                  pTmp_n[(col * BF16_INT4 + 2) * tN + row] = TOperand((src_int & 0x0f00) >> 8);
+                  pTmp_n[(col * BF16_INT4 + 3) * tN + row] = TOperand((src_int & 0xf000) >> 12);
                 });
                 for (int i = 0; i < BF16_INT4; i++) {
                   joint_matrix_load(sg, tB_bf16[n][k1][i], pTmp_n + i * tK * tN, tN);
@@ -149,6 +149,7 @@ double joint_matmul_int4(TOperand *A, TOperand *B_[NUM_B_MATRICES], TResult *C, 
                   }
                 }
               } // for k1
+              it.barrier(access::fence_space::local_space);
             } // for k2
             for (unsigned int m = 0; m < TMCACHE1 / tM; m++) {
               for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
@@ -189,7 +190,7 @@ int gemm(void) {
   // Initialize; fill matrices
   matrix_rand(MATRIX_M, MATRIX_K, A, T1(1));
   matrix_rand(MATRIX_K, MATRIX_N, B[0], T1(1));
-  matrix_multiply_ref(A, B[0], refC, MATRIX_M, MATRIX_N, MATRIX_K);
+  matrix_multiply_int4_ref(A, B[0], refC, MATRIX_M, MATRIX_N, MATRIX_K);
   joint_matmul_int4 < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N,
   T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
   (MATRIX_N >= NCache1) ? NCache1 : MATRIX_N, KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M,
@@ -253,9 +254,9 @@ int main() {
         // gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, (MATRIX_N >= 64) ? 64 : MATRIX_N, 32, MCache1,
         //      NCache1, KCache1, MCache2, NCache2, KCache2, 2,
         //      class pvc_bf16_8x32x16>();
-        gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, (MATRIX_N >= 64) ? 64 : MATRIX_N, 16, MCache1,
-             NCache1, KCache1, MCache2, NCache2, KCache2,
-             class pvc_bf16_8x64x16>();
+        // gemm<bfloat16, float, (MATRIX_M >= 8) ? 8 : MATRIX_M, (MATRIX_N >= 64) ? 64 : MATRIX_N, 16, MCache1,
+        //      NCache1, KCache1, MCache2, NCache2, KCache2,
+        //      class pvc_bf16_8x64x16>();
         break;
       }
     }
