@@ -160,3 +160,172 @@ void matrix_vnni(unsigned int rows, unsigned int cols, T *src, T *dest,
     }
   }
 }
+
+template <unsigned int rowsA, unsigned int colsA, unsigned int rowsB,
+          unsigned int colsB, unsigned int vnniFactor, typename TOperand,
+          typename TResult, size_t MCache1, size_t NCache1, size_t KCache1,
+          size_t MCache2, size_t NCache2, size_t KCache2, size_t tM, size_t tN,
+          size_t tK>
+inline void
+load_mad(TOperand *A, TOperand *B,
+         multi_ptr<TOperand, sycl::access::address_space::global_space,
+                   sycl::access::decorated::no> &pA,
+         multi_ptr<TOperand, sycl::access::address_space::global_space,
+                   sycl::access::decorated::no> &pB,
+         sub_group sg, size_t m2, size_t n2, size_t m1, size_t n1,
+         size_t SG_SIZE,
+         joint_matrix<sub_group, TResult, use::accumulator, tM, tN>
+             tC[MCache1 / tM][NCache1 / tN]) {
+#ifdef PREFETCH
+  size_t sgId = sg.get_group_id()[0];
+  // There are MCache2/MCache1 x NCache2/NCache1 subgroups: NumSGs
+  // PVC case: this is 8x4 subgroups
+  // BKM for PVC is to use prefetch of 8x32 for each subgroup
+  constexpr size_t prefRow = 8;
+  constexpr size_t prefCol = 32;
+  // All the SGs of one workgroup prefetch MCache2xKCache2 of A
+  // All the SGs of one workgroup prefetch KCache2xNCache2 of B
+  // PVC case: 256x32 of A and 32x256 of B
+  // For both A and B: each subgroup performs a prefetch of
+  // prefRow rows and prefCol cols at a time
+  // For A, the subgroups are distributed along the row dimension:
+  // PVC: A layed as MCache2/prefRow (256/32)
+  // For B: the subgroups are distributed along the column dimension
+  // PVC: NCache2/prefCol = 256/32 = 8 SGs on the column dimension and
+  // KCache2/prefRow = 32/8 = 4 SGs on the row dimension
+#ifdef VNNI
+  // In the VNNI case, each subgroup still gets prefRow x prefCol
+  // In the PVC case: subgroups distribution become
+  // (NCache2*2)/prefCol = 512/32 = 16 SGs on the column dimension and
+  // (KCache2/2)/prefRow = 16/8 = 2 SGs on the row dimension
+  // pm1B and pn1B are used to identify the distribution of subgroups
+  // along the workgroup prefetch for B matrix. For A matrix, sgId is
+  // enough.
+  size_t pm1B = sgId / 16;   // prefetch m1 (sgId/16)
+  size_t pn1B = sgId & 0x15; // prefetch n1 (sgId%16)
+#else                        // VNNI
+  size_t pm1B = sgId / 8;   // prefetch m1 (sgId/8)
+  size_t pn1B = sgId & 0x7; // prefetch n1 (sgId%8)
+#endif                       // VNNI
+  constexpr size_t prefDistance = 3;
+  for (int p = 0; p < prefDistance; p++)
+    joint_matrix_prefetch<prefRow, prefCol>(
+        sg, A + (m2 * MCache2 + sgId * prefRow) * colsA + p * prefCol, colsA,
+        layout::row_major, syclex::properties{syclex::prefetch_hint_L1});
+
+#ifdef VNNI
+  for (int p = 0; p < prefDistance; p++)
+    joint_matrix_prefetch<prefRow, prefCol>(
+        sg,
+        B + (p * (KCache2 / vnniFactor) + pm1B * prefRow) * colsB * vnniFactor +
+            (n2 * NCache2 * vnniFactor + pn1B * prefCol),
+        colsB * vnniFactor, layout::row_major,
+        syclex::properties{syclex::prefetch_hint_L1});
+#else  // VNNI
+  for (int p = 0; p < prefDistance; p++)
+    joint_matrix_prefetch<prefRow, prefCol>(
+        sg,
+        B + (p * KCache2 + pm1B * prefRow) * colsB + n2 * NCache2 +
+            pn1B * prefCol,
+        colsB, layout::row_major, syclex::properties{syclex::prefetch_hint_L1});
+#endif // VNNI
+#endif // PREFETCH
+
+  for (unsigned int m = 0; m < MCache1 / tM; m++) {
+    for (unsigned int n = 0; n < NCache1 / tN; n++) {
+      joint_matrix_fill(sg, tC[m][n], 0);
+    }
+  }
+
+  for (unsigned int k2 = 0; k2 < colsA / KCache2; k2++) {
+    joint_matrix<sub_group, TOperand, use::a, tM, tK, layout::row_major>
+        tA[MCache1 / tM][KCache2 / KCache1];
+#ifdef VNNI
+    joint_matrix<sub_group, TOperand, use::b, tK, tN, layout::ext_intel_packed>
+
+        tB[NCache1 / tN][KCache2 / KCache1];
+#else
+    joint_matrix<sub_group, TOperand, use::b, tK, tN, layout::row_major>
+
+        tB[NCache1 / tN][KCache2 / KCache1];
+#endif
+    for (unsigned int k1 = 0; k1 < KCache2 / KCache1; k1++) {
+      //  physical layer
+      unsigned int k = (k2 * KCache2 + k1 * KCache1) / tK;
+      for (unsigned int m = 0; m < MCache1 / tM; m++) {
+#ifdef OOB
+        ext::intel::experimental::matrix::joint_matrix_load_checked(
+            sg, tA[m][k1], pA, colsA, rowsA, colsA,
+            m2 * MCache2 + m1 * MCache1 + m * tM, k * tK);
+#else  // OOB
+        joint_matrix_load(sg, tA[m][k1],
+                          pA + (m2 * MCache2 + m1 * MCache1 + m * tM) * colsA +
+                              k * tK,
+                          colsA);
+#endif // OOB
+      }
+      for (unsigned int n = 0; n < NCache1 / tN; n++) {
+#ifdef OOB
+#ifdef VNNI
+        ext::intel::experimental::matrix::joint_matrix_load_checked(
+            sg, tB[n][k1], pB, colsB * vnniFactor, rowsB / vnniFactor,
+            colsB * vnniFactor, k * tK / vnniFactor,
+            (n2 * NCache2 + n1 * NCache1 + n * tN) * vnniFactor);
+#else // VNNI
+        ext::intel::experimental::matrix::joint_matrix_load_checked(
+            sg, tB[n][k1], pB, colsB, rowsB, colsB, k * tK,
+            n2 * NCache2 + n1 * NCache1 + n * tN);
+
+#endif // VNNI
+#else  // OOB
+#ifdef VNNI
+        joint_matrix_load(sg, tB[n][k1],
+                          pB + (k * tK / vnniFactor) * (colsB * vnniFactor) +
+                              (n2 * NCache2 + n1 * NCache1 + n * tN) *
+                                  vnniFactor,
+                          colsB * vnniFactor);
+#else  // VNNI
+        joint_matrix_load(sg, tB[n][k1],
+                          pB + (k * tK) * (colsB) +
+                              (n2 * NCache2 + n1 * NCache1 + n * tN),
+                          colsB);
+#endif // VNNI
+#endif // OOB
+      }
+      for (unsigned int m = 0; m < MCache1 / tM; m++) {
+        for (unsigned int n = 0; n < NCache1 / tN; n++) {
+          joint_matrix_mad(sg, tC[m][n], tA[m][k1], tB[n][k1], tC[m][n]);
+        }
+      }
+    } // for k1
+#ifdef PREFETCH
+    auto prefetch_offsetA =
+        (m2 * MCache2 + sgId * prefRow) * colsA + (k2 + prefDistance) * prefCol;
+    if ((prefetch_offsetA + (prefRow * colsA) + prefCol) < (rowsA * colsA))
+      joint_matrix_prefetch<prefRow, prefCol>(
+          sg, A + prefetch_offsetA, colsA, layout::row_major,
+          syclex::properties{syclex::prefetch_hint_L1});
+
+#ifdef VNNI
+    auto prefetch_offsetB =
+        ((k2 + prefDistance) * (KCache2 / vnniFactor) + pm1B * prefRow) *
+            (colsB)*vnniFactor +
+        (n2 * NCache2 * vnniFactor + pn1B * prefCol);
+    if ((prefetch_offsetB + (prefRow * colsB * vnniFactor) + prefCol) <
+        (rowsB * colsB))
+      joint_matrix_prefetch<prefRow, prefCol>(
+          sg, B + prefetch_offsetB, colsB * vnniFactor, layout::row_major,
+          syclex::properties{syclex::prefetch_hint_L1});
+#else  // VNNI
+    auto prefetch_offsetB =
+        ((k2 + prefDistance) * KCache2 + pm1B * prefRow) * (colsB) +
+        (n2 * NCache2 + pn1B * prefCol);
+    if ((prefetch_offsetB + (prefRow * colsB) + prefCol) < (rowsB * colsB))
+      joint_matrix_prefetch<prefRow, prefCol>(
+          sg, B + prefetch_offsetB, colsB, layout::row_major,
+          syclex::properties{syclex::prefetch_hint_L1});
+#endif // VNNI
+#endif // PREFETCH
+  } // for k2
+  return;
+}
