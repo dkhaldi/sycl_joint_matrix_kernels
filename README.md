@@ -1,4 +1,4 @@
-# Unified GEMM on Nvidia Tensor Cores, Intel XMX of PVC and DG2, and Intel AMX of SPR  using SYCL joint matrix
+# Unified GEMM and GEMM+GELU on Nvidia Tensor Cores, Intel XMX of PVC and DG2, and Intel AMX of SPR  using SYCL joint matrix
 
 ## joint_matrix_fill_k_cache.cpp:
 #### Portable Optimizations:
@@ -12,6 +12,11 @@
  - Both row major and VNNI transform options. For row major ommit -DVNNI
 #### Missing optimizations:
 no reordering, no SLM for DG2/Nvidia
+
+## joint_matrix_gelu.cpp:
+#### GEMM uses joint matrix (same as in joint_matrix_bf16_fill_k_cache.cpp)
+#### GELU is fused with GEMM in one kernel using joint matrix object
+
 #### Important:
 For maximum performance, cache and registers blocking parameters are
 different between Nvidia Tensor Cores, AMX and DPAS of DG2 vs PVC. See
@@ -20,7 +25,7 @@ specific parameters below:
 M=N=K=X cases, use -DMATRIX_SIZE=X
 Otherwise, use: -DMATRIX_M=1024 -DMATRIX_N=6144 -DMATRIX_K=6144
 
-## Build Command lines
+## Build Command lines (same applies for joint_matrix_gelu)
 
 ### Nvidia (~70 Tflops) Add  -DNVIDIA
 #### 2048
