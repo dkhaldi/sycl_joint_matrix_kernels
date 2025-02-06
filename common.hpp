@@ -1,5 +1,8 @@
 #include <random>
 #include <sycl/sycl.hpp>
+#include <sycl/detail/core.hpp>
+#include <sycl/ext/oneapi/matrix/matrix.hpp>
+#include <sycl/kernel_bundle.hpp>
 
 using namespace sycl;
 using namespace sycl::ext::oneapi::experimental::matrix;
@@ -57,6 +60,7 @@ void matrix_rand(unsigned int rows, unsigned int cols, T *src, T val) {
   }
 }
 
+
 template <typename Ta, typename Tb, typename Tc, unsigned int VF = 1,
           typename F = std::nullptr_t>
 void matrix_multiply_ref(Ta *A, Tb *B, Tc *C, int M, int N, int K,
@@ -96,6 +100,35 @@ void matrix_multiply_ref(Ta *A, Tb *B, Tc *C, int M, int N, int K,
         lambda(acc);
       }
       *(C + c_ind) = acc;
+    }
+  }
+}
+
+// A: M * K BF16 or FP16
+// B: N * (K//4) INT4 data but as BF16 or FP16
+// C: M * N BF16 or FP16
+template <typename Tsrc, typename Tdst>
+void matrix_multiply_int4_ref(Tsrc *A, Tsrc *B, Tdst *C, int M, int N, int K) {
+  for (unsigned int m = 0; m < M; m++) {
+    for (unsigned int n = 0; n < N; n++) {
+      int c_ind = m * N + n;
+      Tdst acc = *(C + m * N + n);
+
+      for (unsigned int k = 0; k < K; k+=4) {
+        int a_ind = m * K + k;
+        int b_ind = k/4 + K / 4 * n;
+        Tsrc vb = *(B + b_ind);
+
+        uint16_t src_int = sycl::bit_cast<uint16_t>(vb);
+        auto f1 = (float)((src_int & 0x000f));
+        auto f2 = (float)((src_int & 0x00f0) >> 4);
+        auto f3 = (float)((src_int & 0x0f00) >> 8);
+        auto f4 = (float)((src_int & 0xf000) >> 12);
+        acc += (Tdst)((float)A[a_ind] * f1 + (float)A[a_ind + 1] * f2 +
+                      (float)A[a_ind + 2] * f3 + (float)A[a_ind + 3] * f4);
+      }
+
+      *(C + c_ind) = (Tdst)acc;
     }
   }
 }
