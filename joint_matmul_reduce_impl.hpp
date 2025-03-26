@@ -11,9 +11,9 @@ template <unsigned int M, unsigned int N, unsigned int K,
           class kernel_name>
 double joint_matmul_reduce(TOperand *A, TOperand *B, TResult *C, queue &q,
                            int testIterations) {
-  size_t SG_SIZE = get_sg_size<kernel_name>(q);
-  range<2> global{K / TKCACHE1, (N / TNCACHE1) * SG_SIZE};
-  range<2> cachelocal{TKCACHE2 / TKCACHE1, TNCACHE2 / TNCACHE1 * SG_SIZE};
+  size_t sgSize = get_sg_size<kernel_name>(q);
+  range<2> global{K / TKCACHE1, (N / TNCACHE1) * sgSize};
+  range<2> cachelocal{TKCACHE2 / TKCACHE1, TNCACHE2 / TNCACHE1 * sgSize};
 
   std::chrono::steady_clock::time_point start =
       std::chrono::steady_clock::now();
@@ -37,7 +37,7 @@ double joint_matmul_reduce(TOperand *A, TOperand *B, TResult *C, queue &q,
             auto m2 = it.get_group(0);
             auto n2 = it.get_group(1);
             auto m1 = it.get_local_id(0);
-            auto n1 = it.get_local_id(1) / SG_SIZE;
+            auto n1 = it.get_local_id(1) / sgSize;
             auto sg = it.get_sub_group();
             joint_matrix<sub_group, TResult, use::accumulator, tM, tN>
                 tC[TMCACHE1 / tM][TNCACHE1 / tN];

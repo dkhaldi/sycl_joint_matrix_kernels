@@ -51,9 +51,9 @@ template <unsigned int rowsA, unsigned int colsA, unsigned int rowsB,
           typename TResult, size_t tM, size_t tN, size_t tK, class kernel_name>
 double joint_matmul_gelu(TOperand *A, TOperand *B, TResult *C, queue &q,
                          int testIterations) {
-  size_t SG_SIZE = get_sg_size<kernel_name>(q);
-  range<2> global{MATRIX_M / MCACHE1, (MATRIX_N / NCACHE1) * SG_SIZE};
-  range<2> cachelocal{MCACHE2 / MCACHE1, NCACHE2 / NCACHE1 * SG_SIZE};
+  size_t sgSize = get_sg_size<kernel_name>(q);
+  range<2> global{MATRIX_M / MCACHE1, (MATRIX_N / NCACHE1) * sgSize};
+  range<2> cachelocal{MCACHE2 / MCACHE1, NCACHE2 / NCACHE1 * sgSize};
 
   // throw error if padding needed
   assert(MATRIX_M % tM == 0);
@@ -71,24 +71,24 @@ double joint_matmul_gelu(TOperand *A, TOperand *B, TResult *C, queue &q,
           nd_range<2>{global, cachelocal}, [=](nd_item<2> it) {
             auto pA =
                 address_space_cast<sycl::access::address_space::global_space,
-                                   sycl::access::decorated::no>(A);
+                                   sycl::access::decorated::yes>(A);
             auto pB =
                 address_space_cast<sycl::access::address_space::global_space,
-                                   sycl::access::decorated::no>(B);
+                                   sycl::access::decorated::yes>(B);
             auto pC =
                 address_space_cast<sycl::access::address_space::global_space,
-                                   sycl::access::decorated::no>(C);
+                                   sycl::access::decorated::yes>(C);
             auto m2 = it.get_group(0);
             auto n2 = it.get_group(1);
             auto m1 = it.get_local_id(0);
-            auto n1 = it.get_local_id(1) / SG_SIZE;
+            auto n1 = it.get_local_id(1) / sgSize;
             auto sg = it.get_sub_group();
             joint_matrix<sub_group, TResult, use::accumulator, tM, tN>
                 tC[MCACHE1 / tM][NCACHE1 / tN];
 
             load_mad<rowsA, colsA, rowsB, colsB, 2, bfloat16, float, MCACHE1,
                      NCACHE1, KCACHE1, MCACHE2, NCACHE2, KCACHE2, tM, tN, tK>(
-                A, B, pA, pB, sg, m2, n2, m1, n1, SG_SIZE, tC);
+                A, B, pA, pB, sg, m2, n2, m1, n1, tC);
 
             for (unsigned int m = 0; m < MCACHE1 / tM; m++) {
               for (unsigned int n = 0; n < NCACHE1 / tN; n++) {
@@ -131,7 +131,8 @@ void native_matmul(bfloat16 *A, bfloat16 *B, float *C) {
   }
 }
 
-template <typename T1, typename T2, size_t tM, size_t tN, size_t tK, class kernel_name>
+template <typename T1, typename T2, size_t tM, size_t tN, size_t tK,
+          class kernel_name>
 int gemm_gelu(void) {
   // number of test iterations
   constexpr unsigned int testIterations = 100;
@@ -147,7 +148,8 @@ int gemm_gelu(void) {
   float *refC = malloc_shared<float>(MATRIX_M * MATRIX_N, q);
   matrix_rand(MATRIX_M, MATRIX_K, A, T1(1));
   matrix_rand(MATRIX_K, MATRIX_N, B, T1(1));
-  matrix_multiply_ref(A, B, refC, MATRIX_M, MATRIX_N, MATRIX_K);
+  matrix_multiply_ref(A, B, refC, MATRIX_M, MATRIX_N, MATRIX_K, false, false,
+                      false, [](float &x) { x = gelu(x); });
 
 #ifdef VNNI
   matrix_vnni<T1>(MATRIX_K, MATRIX_N, B, vnniB, 2);
@@ -157,13 +159,12 @@ int gemm_gelu(void) {
   std::cerr << "Running tests...";
 
   double duration_first =
-      joint_matmul_gelu<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1,
-                        float, tM, tN, tK, kernel_name>(A, B, C, q,
-                                                        1); // first time run
+      joint_matmul_gelu<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1, float,
+                        tM, tN, tK, kernel_name>(A, B, C, q,
+                                                 1); // first time run
   double totalDuration =
-      joint_matmul_gelu<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1,
-                        float, tM, tN, tK, kernel_name>(A, B, C, q,
-                                                        testIterations);
+      joint_matmul_gelu<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, 2, T1, float,
+                        tM, tN, tK, kernel_name>(A, B, C, q, testIterations);
   verify_result(C, refC, MATRIX_M, MATRIX_N, MATRIX_K);
 
   double msecPerMatrixMul = totalDuration / static_cast<double>(testIterations);
@@ -189,13 +190,14 @@ int main() {
   for (unsigned int i = 0; i < combinations.size(); i++) {
     if (combinations[i].atype == matrix_type::bf16) {
       if (combinations[i].nsize == 0) {
-        gemm_gelu<bfloat16, float, 16 /*tM*/, 16 /*tN*/, 32 /*tK*/, class amx>(); // AMX
+        gemm_gelu<bfloat16, float, 16 /*tM*/, 16 /*tN*/, 32 /*tK*/,
+                  class amx>(); // AMX
         break;
       }
       if (combinations[i].nsize == 16) { // PVC
         gemm_gelu<bfloat16, float, 8, 16, 16, class pvc_8x16x16>();
         if constexpr (NCACHE1 >= 64)
-		       gemm_gelu<bfloat16, float, 32, 64, 16, class pvc_32x64x16>();
+          gemm_gelu<bfloat16, float, 32, 64, 16, class pvc_32x64x16>();
         break;
       }
       if (combinations[i].nsize == 8) { // DG2

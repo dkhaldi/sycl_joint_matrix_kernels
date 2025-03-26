@@ -169,11 +169,10 @@ template <unsigned int rowsA, unsigned int colsA, unsigned int rowsB,
 inline void
 load_mad(TOperand *A, TOperand *B,
          multi_ptr<TOperand, sycl::access::address_space::global_space,
-                   sycl::access::decorated::no> &pA,
+                   sycl::access::decorated::yes> &pA,
          multi_ptr<TOperand, sycl::access::address_space::global_space,
-                   sycl::access::decorated::no> &pB,
+                   sycl::access::decorated::yes> &pB,
          sub_group sg, size_t m2, size_t n2, size_t m1, size_t n1,
-         size_t SG_SIZE,
          joint_matrix<sub_group, TResult, use::accumulator, tM, tN>
              tC[MCache1 / tM][NCache1 / tN]) {
 #ifdef PREFETCH

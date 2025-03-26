@@ -7,6 +7,9 @@
 // - Prefetch for PVC is enabled under -DPREFETCH
 
 #include "common.hpp"
+#ifdef SLM
+#include "slm_utils.hpp"
+#endif
 #include "joint_matmul_reduce_impl.hpp"
 
 #ifndef MATRIX_SIZE
@@ -51,9 +54,9 @@ template <unsigned int rowsA, unsigned int colsA, unsigned int rowsB,
 double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                     int testIterations) {
 
-  size_t SG_SIZE = get_sg_size<kernel_name>(q);
-  range<2> global{rowsA / TMCACHE1, (colsB / TNCACHE1) * SG_SIZE};
-  range<2> cachelocal{TMCACHE2 / TMCACHE1, TNCACHE2 / TNCACHE1 * SG_SIZE};
+  size_t sgSize = get_sg_size<kernel_name>(q);
+  range<2> global{rowsA / TMCACHE1, (colsB / TNCACHE1) * sgSize};
+  range<2> cachelocal{TMCACHE2 / TMCACHE1, TNCACHE2 / TNCACHE1 * sgSize};
 
   // throw error if padding or different tuning parameters are needed
   static_assert(colsA == rowsB);
@@ -74,24 +77,37 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
   for (unsigned int i = 0; i < testIterations; i++) {
 
     auto mk = q.submit([&](handler &h) {
+#ifdef SLM
+      local_accessor<TOperand, 2> tileAInitial{{MCACHE2, KCACHE2}, h};
+      local_accessor<TOperand, 2> tileBInitial{
+          {KCACHE2 / vnniFactor, NCACHE2 * vnniFactor}, h};
+#endif
       h.parallel_for<kernel_name>( // cache layer#1
           nd_range<2>{global, cachelocal}, [=](nd_item<2> it) {
+#ifdef SLM
+            auto tileA =
+                tileAInitial
+                    .template get_multi_ptr<sycl::access::decorated::yes>();
+            auto tileB =
+                tileBInitial
+                    .template get_multi_ptr<sycl::access::decorated::yes>();
+#endif
 #ifndef ANNOT
             auto pA =
                 address_space_cast<sycl::access::address_space::global_space,
-                                   sycl::access::decorated::no>(A);
+                                   sycl::access::decorated::yes>(A);
             auto pB =
                 address_space_cast<sycl::access::address_space::global_space,
-                                   sycl::access::decorated::no>(B);
+                                   sycl::access::decorated::yes>(B);
 #endif
             auto pC =
                 address_space_cast<sycl::access::address_space::global_space,
-                                   sycl::access::decorated::no>(C);
+                                   sycl::access::decorated::yes>(C);
 
             auto m2 = it.get_group(0);
             auto n2 = it.get_group(1);
             auto m1 = it.get_local_id(0);
-            auto n1 = it.get_local_id(1) / SG_SIZE;
+            auto n1 = it.get_local_id(1) / sgSize;
             auto sg = it.get_sub_group();
 #ifdef PREFETCH
             size_t sgId = sg.get_group_id()[0];
@@ -163,6 +179,10 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                 joint_matrix_fill(sg, tC[m][n], 0);
               }
             }
+#ifdef SLM
+            constexpr unsigned int SGs =
+                (MCACHE2 / MCACHE1) * (NCACHE2 / NCACHE1);
+#endif // SLM
 #ifdef ANNOT
             auto pA = syclex::annotated_ptr{
                 A, syclex::properties{
@@ -177,6 +197,13 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
 #endif
 
             for (unsigned int k2 = 0; k2 < colsA / TKCACHE2; k2++) {
+#ifdef SLM
+              slm_read_write<rowsA, colsA, rowsB, colsB, MCACHE2, NCACHE2,
+                             KCACHE2, vnniFactor, SGs, TOperand,
+                             sycl::access::address_space::global_space>(
+                  pA, pB, tileA, tileB, sg, k2, m2, n2, sgSize);
+              it.barrier(access::fence_space::local_space);
+#endif // SLM
               joint_matrix<sub_group, TOperand, use::a, tM, tK,
                            layout::row_major>
                   tA[TMCACHE1 / tM][TKCACHE2 / TKCACHE1];
@@ -199,12 +226,20 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                   ext::intel::experimental::matrix::joint_matrix_load_checked(
                       sg, tA[m][k1], pA, colsA, rowsA, colsA,
                       m2 * TMCACHE2 + m1 * TMCACHE1 + m * tM, k * tK);
-#else  // OOB
+#else // OOB
+#ifdef SLM
+                  joint_matrix_load(sg, tA[m][k1],
+                                    tileA  +
+                                        (m1 * MCACHE1 + m * tM) * KCACHE2 +
+                                        k1 * tK,
+                                    KCACHE2);
+#else  // SLM
                   joint_matrix_load(
                       sg, tA[m][k1],
                       pA + (m2 * TMCACHE2 + m1 * TMCACHE1 + m * tM) * colsA +
                           k * tK,
                       colsA);
+#endif // SLM
 #endif // OOB
                 }
                 for (unsigned int n = 0; n < TNCACHE1 / tN; n++) {
@@ -222,11 +257,20 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
 #endif // VNNI
 #else  // OOB
 #ifdef VNNI
+#ifdef SLM
+                  joint_matrix_load(sg, tB[n][k1],
+                                    tileB +
+                                        (k1 * tK / vnniFactor) *
+                                            (NCACHE2 * vnniFactor) +
+                                        (n1 * NCACHE1 + n * tN) * vnniFactor,
+                                    NCACHE2 * vnniFactor);
+#else  // SLM
                   joint_matrix_load(
                       sg, tB[n][k1],
                       pB + (k * tK / vnniFactor) * (colsB * vnniFactor) +
                           (n2 * TNCACHE2 + n1 * TNCACHE1 + n * tN) * vnniFactor,
                       colsB * vnniFactor);
+#endif // SLM
 #else  // VNNI
                   joint_matrix_load(
                       sg, tB[n][k1],
@@ -242,6 +286,9 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
                   }
                 }
               } // for k1
+#ifdef SLM
+              it.barrier(access::fence_space::local_space);
+#endif // SLM
 #ifdef PREFETCH
               auto prefetch_offsetA = (m2 * TMCACHE2 + sgId * prefRow) * colsA +
                                       (k2 + prefDistance) * prefCol;
@@ -344,10 +391,12 @@ int gemm(void) {
                  KCache2, kernel_name>(A, B, C, q, 1);
 
     // run testIterations time, aggregate and calculate average run time
-    duration = joint_matmul < MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N,
-    vnniFactor, T1, T2, tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
-    NCache1, KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2,
-    KCache2, kernel_name > (A, B, C, q, testIterations);
+    duration =
+        joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, vnniFactor, T1, T2,
+                     tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
+                     NCache1, KCache1,
+                     (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2,
+                     KCache2, kernel_name>(A, B, C, q, testIterations);
   }
   matrix_compare(MATRIX_M, MATRIX_N, C, refC);
 

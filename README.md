@@ -1,4 +1,5 @@
-# Unified GEMM and GEMM+GELU on Nvidia Tensor Cores, Intel XMX of PVC, LNL, BMG and DG2, and Intel AMX of SPR  using SYCL joint matrix
+#Unified GEMM and GEMM + GELU on Nvidia Tensor Cores, Intel XMX of PVC, LNL,   \
+    BMG and DG2, and Intel AMX of SPR using SYCL joint matrix
 
 ## joint_matrix_fill_k_cache.cpp:
 #### Portable Optimizations:
@@ -8,10 +9,13 @@
 #### Specific Optimizations for BMG, LNL, and PVC:
  - Out of Bounds checking is used for PVC, BMG, and LNL using -DOOB
  - Prefetch for PVC, BMG, and LNL is enabled under -DPREFETCH
-#### Specific options for AMX and SG2
+ - Increase testIterations for BMG, LNL to avoid GPU frequency drop
+#### Specific options for AMX and DG2
  - Both row major and VNNI transform options. For row major ommit -DVNNI
+#### Specific Optimizations for DG2
+- SLM tuning for DG2, add -DSG_SIZE=8 -DSLM to the common options below
 #### Missing optimizations:
-no reordering, no SLM for DG2/Nvidia
+no reordering, no SLM for Nvidia
 
 ## joint_matrix_gelu.cpp:
 #### GEMM uses joint matrix (same as in joint_matrix_bf16_fill_k_cache.cpp)
