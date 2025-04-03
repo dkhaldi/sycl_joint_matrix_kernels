@@ -9,8 +9,10 @@
 #### Specific Optimizations for BMG, LNL, and PVC:
  - Out of Bounds checking is used for PVC, BMG, and LNL using -DOOB
  - Prefetch for PVC, BMG, and LNL is enabled under -DPREFETCH
- - Increase testIterations for BMG, LNL to avoid GPU frequency drop
-#### Specific options for AMX and DG2
+#### BMG and LNL: Add -DCLIENT for:
+ - Since BMG/LNL has a smaller L1 cache and slower DPAS, prefetch distance is reduced.
+ - Increase number of iterations to ensure the GPU doesn't idle and thus frequency does not drop
+#### Specific options for AMX and SG2
  - Both row major and VNNI transform options. For row major ommit -DVNNI
 #### Specific Optimizations for DG2
 - SLM tuning for DG2, add -DSG_SIZE=8 -DSLM to the common options below

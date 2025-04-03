@@ -143,7 +143,13 @@ double joint_matmul(TOperand *A, TOperand *B, TResult *C, queue &q,
           size_t pm1B = sgId / 8;   // prefetch m1 (sgId/8)
           size_t pn1B = sgId & 0x7; // prefetch n1 (sgId%8)
 #endif                                 // VNNI
+#ifdef CLIENT
+            // Since BMG/LNL has a smaller L1 cache and slower DPAS, prefetch
+            // distance is reduced
+            constexpr size_t prefDistance = 2;
+#else
             constexpr size_t prefDistance = 3;
+#endif
             for (int p = 0; p < prefDistance; p++)
               joint_matrix_prefetch<prefRow, prefCol>(
                   sg,
@@ -354,8 +360,7 @@ template <typename T1, typename T2, size_t tM, size_t tN, size_t tK,
           class kernel_name, bool reduce = false>
 int gemm(void) {
   // number of test iterations
-  constexpr unsigned int testIterations = 100;
-
+  unsigned int testIterations = 100;
   queue q;
   T1 *A = malloc_shared<T1>(MATRIX_M * MATRIX_K, q);
   T1 *B = malloc_shared<T1>(MATRIX_K * MATRIX_N, q);
@@ -372,7 +377,6 @@ int gemm(void) {
   matrix_vnni<T1>(MATRIX_K, MATRIX_N, B, vnniB, vnniFactor);
   B = vnniB;
 #endif
-
   std::cerr << "Running tests...";
   double duration = 0;
   if constexpr (reduce) {
@@ -389,7 +393,17 @@ int gemm(void) {
                  tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M, NCache1,
                  KCache1, (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2,
                  KCache2, kernel_name>(A, B, C, q, 1);
-
+#ifdef CLIENT
+    // Increase number of iterations to ensure the GPU doesn't idle and thus
+    // frequency does not drop
+    double dur_first =
+        joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, vnniFactor, T1, T2,
+                     tM, tN, tK, (MATRIX_M >= MCache1) ? MCache1 : MATRIX_M,
+                     NCache1, KCache1,
+                     (MATRIX_M >= MCache2) ? MCache2 : MATRIX_M, NCache2,
+                     KCache2, kernel_name>(A, B, C, q, 1);
+    testIterations = 8000 / dur_first;
+#endif
     // run testIterations time, aggregate and calculate average run time
     duration =
         joint_matmul<MATRIX_M, MATRIX_K, MATRIX_K, MATRIX_N, vnniFactor, T1, T2,
